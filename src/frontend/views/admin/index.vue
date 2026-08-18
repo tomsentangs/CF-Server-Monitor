@@ -165,6 +165,7 @@
           :settings="settings"
           @theme-applied="settings.theme_url = $event"
           @theme-options-applied="handleThemeOptionsApplied"
+          @alert-message="alertMessage = $event"
         />
       </div>
 
@@ -209,12 +210,16 @@
         :delete-server-id="deleteServerId"
         :current-server-name="currentServerName"
         :delete-target-os="deleteTargetOs"
+        :delete-version="deleteVersion"
+        :delete-gh-proxy="deleteGhProxy"
         :uninstall-command="getUninstallCommand()"
         :uninstall-copied="uninstallCopied"
         @close="closeDeleteModal"
         @confirm-delete="confirmDelete"
         @copy-uninstall="copyUninstallCmd"
         @update:delete-target-os="deleteTargetOs = $event"
+        @update:delete-version="deleteVersion = $event"
+        @update:delete-gh-proxy="deleteGhProxy = $event"
       />
 
       <CopyCommandModal
@@ -222,8 +227,10 @@
         :show="showCopyModal"
         :current-server-name="currentServerName"
         :target-os="targetOs"
+        :install-gh-proxy="installGhProxy"
         :collect-interval="collectInterval"
         :report-interval="reportInterval"
+        :connection-mode="connectionMode"
         :custom-ct="customCt"
         :custom-cu="customCu"
         :custom-cm="customCm"
@@ -238,6 +245,7 @@
         @close="closeCopyModal"
         @copy-cmd="copyCustomCmd"
         @update:target-os="targetOs = $event"
+        @update:install-gh-proxy="installGhProxy = $event"
         @open-edit-from-copy="openEditModalFromCopy"
       />
 
@@ -296,7 +304,7 @@
       <div v-if="d1UsageResult" id="d1UsageModal" class="modal-overlay active">
         <div class="modal-dialog">
           <div class="modal-header">
-            <div class="modal-title">$ D1 & Workers quota --utc</div>
+            <div class="modal-title">$ D1, Workers & Durable Objects quota --utc</div>
             <button class="modal-close" @click="d1UsageResult = null">✕</button>
           </div>
 
@@ -313,7 +321,7 @@
                     <span>{{ getUsagePercent(d1UsageResult.usage.today.rowsRead, 5000000) }}%</span>
                   </div>
                   <div class="quota-progress-bar">
-                    <div class="quota-progress-fill" :style="{ width: getUsagePercent(d1UsageResult.usage.today.rowsRead, 5000000) + '%' }"></div>
+                    <div class="quota-progress-fill" :style="{ width: getUsageBarPercent(d1UsageResult.usage.today.rowsRead, 5000000) + '%' }"></div>
                   </div>
                 </div>
                 <div class="quota-progress-item">
@@ -322,7 +330,7 @@
                     <span>{{ getUsagePercent(d1UsageResult.usage.today.rowsWritten, 100000) }}%</span>
                   </div>
                   <div class="quota-progress-bar">
-                    <div class="quota-progress-fill" :style="{ width: getUsagePercent(d1UsageResult.usage.today.rowsWritten, 100000) + '%' }"></div>
+                    <div class="quota-progress-fill" :style="{ width: getUsageBarPercent(d1UsageResult.usage.today.rowsWritten, 100000) + '%' }"></div>
                   </div>
                 </div>
                 <div class="quota-progress-item">
@@ -331,7 +339,44 @@
                     <span>{{ getUsagePercent(d1UsageResult.usage.today.workersRequests, 100000) }}%</span>
                   </div>
                   <div v-if="d1UsageResult.usage.today.workersRequests" class="quota-progress-bar">
-                    <div class="quota-progress-fill" :style="{ width: getUsagePercent(d1UsageResult.usage.today.workersRequests, 100000) + '%' }"></div>
+                    <div class="quota-progress-fill" :style="{ width: getUsageBarPercent(d1UsageResult.usage.today.workersRequests, 100000) + '%' }"></div>
+                  </div>
+                </div>
+                <div class="quota-progress-item">
+                  <div class="flex-justify-between text-sm mb-1">
+                    <span class="quota-label-with-help">
+                      <span>{{ trans.durableObjectsRequests }}：{{ formatNumber(d1UsageResult.usage.today.durableObjectsRequests) }} / {{ formatNumber(100000) }}</span>
+                      <span class="quota-help" tabindex="0" :aria-label="formatDurableObjectsUsageTooltip(d1UsageResult.usage.today)">
+                        <span class="quota-help-dot" aria-hidden="true">?</span>
+                        <span class="quota-help-tooltip" role="tooltip">
+                          <span v-for="row in getDurableObjectsUsageRows(d1UsageResult.usage.today)" :key="row.key" class="quota-help-row">
+                            <span class="quota-help-label">{{ row.label }}</span>
+                            <span class="quota-help-value">{{ row.value }}</span>
+                          </span>
+                        </span>
+                      </span>
+                    </span>
+                    <span>{{ getUsagePercent(d1UsageResult.usage.today.durableObjectsRequests, 100000) }}%</span>
+                  </div>
+                  <div class="quota-progress-bar">
+                    <div class="quota-progress-fill" :style="{ width: getUsageBarPercent(d1UsageResult.usage.today.durableObjectsRequests, 100000) + '%' }"></div>
+                  </div>
+                </div>
+                <div class="quota-progress-item">
+                  <div class="flex-justify-between text-sm mb-1">
+                    <span class="quota-label-with-help">
+                      <span>{{ trans.durableObjectsDuration }}：{{ formatNumber(d1UsageResult.usage.today.durableObjectsDuration, 2) }} / {{ formatNumber(13000) }}</span>
+                      <span class="quota-help" tabindex="0" :aria-label="trans.durableObjectsDurationTip">
+                        <span class="quota-help-dot" aria-hidden="true">?</span>
+                        <span class="quota-help-tooltip" role="tooltip">
+                          <span class="quota-help-row">{{ trans.durableObjectsDurationTip }}</span>
+                        </span>
+                      </span>
+                    </span>
+                    <span>{{ getUsagePercent(d1UsageResult.usage.today.durableObjectsDuration, 13000) }}%</span>
+                  </div>
+                  <div class="quota-progress-bar">
+                    <div class="quota-progress-fill" :style="{ width: getUsageBarPercent(d1UsageResult.usage.today.durableObjectsDuration, 13000) + '%' }"></div>
                   </div>
                 </div>
               </div>
@@ -346,7 +391,7 @@
                     <span>{{ getUsagePercent(d1UsageResult.usage.yesterday.rowsRead, 5000000) }}%</span>
                   </div>
                   <div class="quota-progress-bar">
-                    <div class="quota-progress-fill" :style="{ width: getUsagePercent(d1UsageResult.usage.yesterday.rowsRead, 5000000) + '%' }"></div>
+                    <div class="quota-progress-fill" :style="{ width: getUsageBarPercent(d1UsageResult.usage.yesterday.rowsRead, 5000000) + '%' }"></div>
                   </div>
                 </div>
                 <div class="quota-progress-item">
@@ -355,7 +400,7 @@
                     <span>{{ getUsagePercent(d1UsageResult.usage.yesterday.rowsWritten, 100000) }}%</span>
                   </div>
                   <div class="quota-progress-bar">
-                    <div class="quota-progress-fill" :style="{ width: getUsagePercent(d1UsageResult.usage.yesterday.rowsWritten, 100000) + '%' }"></div>
+                    <div class="quota-progress-fill" :style="{ width: getUsageBarPercent(d1UsageResult.usage.yesterday.rowsWritten, 100000) + '%' }"></div>
                   </div>
                 </div>
                 <div v-if="d1UsageResult.usage.yesterday.workersRequests" class="quota-progress-item">
@@ -364,7 +409,44 @@
                     <span>{{ getUsagePercent(d1UsageResult.usage.yesterday.workersRequests, 100000) }}%</span>
                   </div>
                   <div class="quota-progress-bar">
-                    <div class="quota-progress-fill" :style="{ width: getUsagePercent(d1UsageResult.usage.yesterday.workersRequests, 100000) + '%' }"></div>
+                    <div class="quota-progress-fill" :style="{ width: getUsageBarPercent(d1UsageResult.usage.yesterday.workersRequests, 100000) + '%' }"></div>
+                  </div>
+                </div>
+                <div class="quota-progress-item">
+                  <div class="flex-justify-between text-sm mb-1">
+                    <span class="quota-label-with-help">
+                      <span>{{ trans.durableObjectsRequests }}：{{ formatNumber(d1UsageResult.usage.yesterday.durableObjectsRequests) }} / {{ formatNumber(100000) }}</span>
+                      <span class="quota-help" tabindex="0" :aria-label="formatDurableObjectsUsageTooltip(d1UsageResult.usage.yesterday)">
+                        <span class="quota-help-dot" aria-hidden="true">?</span>
+                        <span class="quota-help-tooltip" role="tooltip">
+                          <span v-for="row in getDurableObjectsUsageRows(d1UsageResult.usage.yesterday)" :key="row.key" class="quota-help-row">
+                            <span class="quota-help-label">{{ row.label }}</span>
+                            <span class="quota-help-value">{{ row.value }}</span>
+                          </span>
+                        </span>
+                      </span>
+                    </span>
+                    <span>{{ getUsagePercent(d1UsageResult.usage.yesterday.durableObjectsRequests, 100000) }}%</span>
+                  </div>
+                  <div class="quota-progress-bar">
+                    <div class="quota-progress-fill" :style="{ width: getUsageBarPercent(d1UsageResult.usage.yesterday.durableObjectsRequests, 100000) + '%' }"></div>
+                  </div>
+                </div>
+                <div class="quota-progress-item">
+                  <div class="flex-justify-between text-sm mb-1">
+                    <span class="quota-label-with-help">
+                      <span>{{ trans.durableObjectsDuration }}：{{ formatNumber(d1UsageResult.usage.yesterday.durableObjectsDuration, 2) }} / {{ formatNumber(13000) }}</span>
+                      <span class="quota-help" tabindex="0" :aria-label="trans.durableObjectsDurationTip">
+                        <span class="quota-help-dot" aria-hidden="true">?</span>
+                        <span class="quota-help-tooltip" role="tooltip">
+                          <span class="quota-help-row">{{ trans.durableObjectsDurationTip }}</span>
+                        </span>
+                      </span>
+                    </span>
+                    <span>{{ getUsagePercent(d1UsageResult.usage.yesterday.durableObjectsDuration, 13000) }}%</span>
+                  </div>
+                  <div class="quota-progress-bar">
+                    <div class="quota-progress-fill" :style="{ width: getUsageBarPercent(d1UsageResult.usage.yesterday.durableObjectsDuration, 13000) + '%' }"></div>
                   </div>
                 </div>
               </div>
@@ -481,6 +563,43 @@ import { detectBillingCycle, detectCurrencySymbol, normalizeBillingCycle, normal
 const trans = useTranslation()
 const route = useRoute()
 const router = useRouter()
+const AGENT_RELEASE_URL = 'https://api.github.com/repos/huilang-me/cfsm-agent/releases/latest'
+const AGENT_RELEASE_FAILURE_TTL = 30 * 1000
+
+let cachedAgentReleaseVersion = ''
+let cachedAgentReleaseFailureAt = 0
+let agentReleasePromise = null
+
+const normalizeVersion = (version) => String(version || '').trim()
+
+const fetchLatestAgentReleaseVersion = async () => {
+  if (cachedAgentReleaseVersion) return cachedAgentReleaseVersion
+  if (cachedAgentReleaseFailureAt && Date.now() - cachedAgentReleaseFailureAt < AGENT_RELEASE_FAILURE_TTL) return ''
+  if (agentReleasePromise) return agentReleasePromise
+
+  agentReleasePromise = fetch(AGENT_RELEASE_URL, {
+    headers: { Accept: 'application/vnd.github+json' }
+  }).then(async (res) => {
+    if (!res.ok) throw new Error(`GitHub release request failed: ${res.status}`)
+    const release = await res.json()
+    const version = normalizeVersion(release?.tag_name)
+    if (version) {
+      cachedAgentReleaseVersion = version
+      cachedAgentReleaseFailureAt = 0
+    } else {
+      cachedAgentReleaseFailureAt = Date.now()
+    }
+    return version
+  }).catch((e) => {
+    cachedAgentReleaseFailureAt = Date.now()
+    console.error('[ERROR] Load latest agent release failed:', e)
+    return ''
+  }).finally(() => {
+    agentReleasePromise = null
+  })
+
+  return agentReleasePromise
+}
 
 const getMessage = (msg) => {
   if (typeof msg === 'string') {
@@ -618,10 +737,42 @@ const parseThemeOptions = (value) => {
   }
 }
 
-const formatNumber = (value) => Number(value || 0).toLocaleString()
+const formatNumber = (value, maximumFractionDigits = 0) => (
+  Number(value || 0).toLocaleString(undefined, { maximumFractionDigits })
+)
+const getDurableObjectsUsageRows = (usage = {}) => ([
+  {
+    key: 'http',
+    label: trans.value.durableObjectsHttpRequests,
+    value: `${formatNumber(usage.durableObjectsHttpRequests)} · ${trans.value.billingRatioOneToOne}`
+  },
+  {
+    key: 'hibernation',
+    label: trans.value.durableObjectsHibernationWakeups,
+    value: `${formatNumber(usage.durableObjectsHibernationWakeups)} · ${trans.value.billingRatioOneToOne}`
+  },
+  {
+    key: 'inbound-ws',
+    label: trans.value.durableObjectsInboundWebSocketMessages,
+    value: `${formatNumber(usage.durableObjectsInboundWebSocketMessages)} · ${trans.value.billingRatioWebSocketIncoming}`
+  },
+  {
+    key: 'outbound-ws',
+    label: trans.value.durableObjectsOutboundWebSocketMessages,
+    value: `${formatNumber(usage.durableObjectsOutboundWebSocketMessages)} · ${trans.value.billingRatioNotBilled}`
+  }
+])
+const formatDurableObjectsUsageTooltip = (usage = {}) => (
+  getDurableObjectsUsageRows(usage)
+    .map(row => `${row.label}: ${row.value}`)
+    .join('\n')
+)
 const getUsagePercent = (used, limit) => {
   if (!limit) return 0
-  return Math.min(100, Number(((Number(used || 0) / Number(limit)) * 100).toFixed(2)))
+  return Number(((Number(used || 0) / Number(limit)) * 100).toFixed(2))
+}
+const getUsageBarPercent = (used, limit) => {
+  return Math.min(100, Math.max(0, getUsagePercent(used, limit)))
 }
 
 const isMultipleMode = computed(() => hasMultipleApiBases())
@@ -676,6 +827,7 @@ const settings = ref({
   show_expire: true,
   show_tf: true,
   show_time: true,
+  wss_report_enabled: false,
   long_history_points: String(HISTORY.DEFAULT_LONG_RANGE_POINTS),
   tg_notify: '0',
   expire_reminder: '0',
@@ -750,6 +902,7 @@ const editForm = ref({
   reset_day: 1,
   collect_interval: 0,
   report_interval: 60,
+  connection_mode: 'auto',
   custom_ct: '',
   custom_cu: '',
   custom_cm: '',
@@ -768,6 +921,8 @@ const copiedServerId = ref(null)
 const copiedNoteServerId = ref(null)
 const copiedSpecKey = ref(null)
 const deleteTargetOs = ref('linux')
+const deleteVersion = ref('go')
+const deleteGhProxy = ref('')
 const uninstallCopied = ref(false)
 const saving = ref(false)
 
@@ -793,8 +948,10 @@ const showCopyModal = ref(false)
 const copyServerId = ref('')
 const currentServerName = ref('')
 const targetOs = ref('linux')
+const installGhProxy = ref('')
 const collectInterval = ref(0)
 const reportInterval = ref(60)
+const connectionMode = ref('auto')
 const customCt = ref('')
 const customCu = ref('')
 const customCm = ref('')
@@ -805,6 +962,19 @@ const rxCorrection = ref('')
 const txCorrection = ref('')
 const autoUpdate = ref(false)
 const copiedCmd = ref(false)
+
+const isWssReportEnabled = computed(() => settings.value.wss_report_enabled === true)
+const getEffectiveConnectionMode = (value) => {
+  const connectionMode = value === 'http' ? 'http' : 'auto'
+  return isWssReportEnabled.value ? connectionMode : 'http'
+}
+
+watch(isWssReportEnabled, (enabled) => {
+  if (!enabled) {
+    editForm.value.connection_mode = 'http'
+    connectionMode.value = 'http'
+  }
+})
 
 const getPingNodeLabel = (field) => ({
   custom_ct: trans.value.customCt,
@@ -1001,10 +1171,11 @@ const handleAdminApiIndexChange = async () => {
 const loadLatestAgentVersion = async () => {
   try {
     const config = await fetchConfig(selectedApiIndex.value)
-    latestAgentVersion.value = config?.last_agent_version || ''
+    const configVersion = normalizeVersion(config?.last_agent_version)
+    latestAgentVersion.value = configVersion || await fetchLatestAgentReleaseVersion()
   } catch (e) {
     console.error('[ERROR] Load latest agent version failed:', e)
-    latestAgentVersion.value = ''
+    latestAgentVersion.value = await fetchLatestAgentReleaseVersion()
   }
 }
 
@@ -1027,6 +1198,7 @@ const loadSettings = async () => {
         show_expire: settingsData.show_expire === 'true',
         show_tf: settingsData.show_tf === 'true',
         show_time: settingsData.show_time === 'true',
+        wss_report_enabled: settingsData.wss_report_enabled === 'true' || settingsData.wss_report_enabled === true,
         long_history_points: normalizeLongHistoryPointsSetting(settingsData.long_history_points),
         tg_notify: normalizeTgNotifySetting(settingsData.tg_notify),
         expire_reminder: normalizeExpireReminderSetting(settingsData.expire_reminder),
@@ -1165,6 +1337,7 @@ const saveSettings = async () => {
       show_expire: settings.value.show_expire ? 'true' : 'false',
       show_tf: settings.value.show_tf ? 'true' : 'false',
       show_time: settings.value.show_time ? 'true' : 'false',
+      wss_report_enabled: settings.value.wss_report_enabled ? 'true' : 'false',
       long_history_points: normalizeLongHistoryPointsSetting(settings.value.long_history_points),
       tg_notify: normalizeTgNotifySetting(settings.value.tg_notify),
       expire_reminder: normalizeExpireReminderSetting(settings.value.expire_reminder),
@@ -1266,6 +1439,18 @@ const getInstallCommand = (serverId) => {
 
 const getUninstallCommand = () => {
   const HOST = selectedApiBase.value
+  const isGo = deleteVersion.value === 'go'
+  const proxy = isGo ? deleteGhProxy.value.trim() : ''
+  if (isGo) {
+    const proxyParam = proxy ? ` --install-ghproxy=${proxy}` : ''
+    if (deleteTargetOs.value === 'windows') {
+      const ghUrl = buildGhRawUrl(proxy, '/huilang-me/cfsm-agent/main/install.ps1')
+      return `$script = "$env:TEMP\\install-cf-probe.ps1"; Invoke-WebRequest -Uri "${ghUrl}" -OutFile $script -UseBasicParsing; PowerShell -ExecutionPolicy Bypass -File $script uninstall${proxyParam}`
+    }
+    const sudoPrefix = deleteTargetOs.value === 'mac' ? 'sudo ' : ''
+    const ghUrl = buildGhRawUrl(proxy, '/huilang-me/cfsm-agent/main/install.sh')
+    return `curl -fsSL ${ghUrl} | ${sudoPrefix}sh -s -- uninstall${proxyParam}`
+  }
   if (deleteTargetOs.value === 'windows') {
     return `irm ${HOST}/cf-server-monitor.ps1 -OutFile cf-server-monitor.ps1; powershell -ExecutionPolicy Bypass -File .\\cf-server-monitor.ps1 uninstall`
   }
@@ -1284,8 +1469,10 @@ const copyCmd = (serverId) => {
   copyServerId.value = serverId
   currentServerName.value = server?.name || ''
   targetOs.value = 'linux'
+  installGhProxy.value = ''
   collectInterval.value = server?.collect_interval ?? 0
   reportInterval.value = server?.report_interval || 60
+  connectionMode.value = getEffectiveConnectionMode(server?.connection_mode)
   customCt.value = server?.custom_ct || settings.value.custom_ct
   customCu.value = server?.custom_cu || settings.value.custom_cu
   customCm.value = server?.custom_cm || settings.value.custom_cm
@@ -1301,45 +1488,64 @@ const copyCmd = (serverId) => {
 
 const hasCorrectionValue = (value) => value !== null && value !== undefined && value !== ''
 
+const buildGhRawUrl = (proxy, path) => {
+  const base = 'https://raw.githubusercontent.com'
+  if (!proxy) return `${base}${path}`
+  const cleanProxy = proxy.replace(/\/$/, '')
+  return `${cleanProxy}/${base}${path}`
+}
+
 const getCustomInstallCommand = () => {
   const HOST = selectedApiBase.value
   const autoUpdateFlag = autoUpdate.value ? 1 : 0
+  const proxy = installGhProxy.value.trim()
+  const effectiveConnectionMode = getEffectiveConnectionMode(connectionMode.value)
   if (targetOs.value === 'windows') {
     const params = [
-      'install',
-      `-Id '${copyServerId.value}'`,
-      `-Secret '${apiSecret.value}'`,
-      `-Url '${HOST}/update'`,
-      `-CollectInterval ${collectInterval.value}`,
-      `-ReportInterval ${reportInterval.value}`,
-      `-ResetDay ${resetDay.value ?? 1}`,
-      `-AutoUpdate ${autoUpdateFlag}`
+      'install'
     ]
-    if (customCt.value) params.push(`-CtNode '${customCt.value}'`)
-    if (customCu.value) params.push(`-CuNode '${customCu.value}'`)
-    if (customCm.value) params.push(`-CmNode '${customCm.value}'`)
-    if (customBd.value) params.push(`-BdNode '${customBd.value}'`)
-    if (networkInterface.value) params.push(`-Interface '${networkInterface.value}'`)
-    if (hasCorrectionValue(rxCorrection.value)) params.push(`-RxCorrection ${rxCorrection.value}`)
-    if (hasCorrectionValue(txCorrection.value)) params.push(`-TxCorrection ${txCorrection.value}`)
-    return `irm ${HOST}/cf-server-monitor.ps1 -OutFile cf-server-monitor.ps1; powershell -ExecutionPolicy Bypass -File .\\cf-server-monitor.ps1 ${params.join(' ')}`
+    if (proxy) params.push(`--install-ghproxy='${proxy}'`)
+    params.push(
+      `-id='${copyServerId.value}'`,
+      `-secret='${apiSecret.value}'`,
+      `-url='${HOST}/update'`,
+      `-collect_interval='${collectInterval.value}'`,
+      `-interval='${reportInterval.value}'`,
+      `-connection_mode='${effectiveConnectionMode}'`,
+      `-reset_day='${resetDay.value ?? 1}'`,
+      `-auto_update='${autoUpdateFlag}'`
+    )
+    if (customCt.value) params.push(`-ct='${customCt.value}'`)
+    if (customCu.value) params.push(`-cu='${customCu.value}'`)
+    if (customCm.value) params.push(`-cm='${customCm.value}'`)
+    if (customBd.value) params.push(`-bd='${customBd.value}'`)
+    if (networkInterface.value) params.push(`-interface='${networkInterface.value}'`)
+    if (hasCorrectionValue(rxCorrection.value)) params.push(`-rx_correction='${rxCorrection.value}'`)
+    if (hasCorrectionValue(txCorrection.value)) params.push(`-tx_correction='${txCorrection.value}'`)
+    const ghUrl = buildGhRawUrl(proxy, '/huilang-me/cfsm-agent/main/install.ps1')
+    return `$script = "$env:TEMP\\install-cf-probe.ps1"; Invoke-WebRequest -Uri "${ghUrl}" -OutFile $script -UseBasicParsing; PowerShell -ExecutionPolicy Bypass -File $script ${params.join(' ')}`
   }
-  const shell = targetOs.value === 'alpine' || targetOs.value === 'openwrt' ? 'sh' : 'bash'
-  const sudoPrefix = targetOs.value === 'mac' ? 'sudo ' : ''
-  const script = targetOs.value === 'alpine' ? 'install-alpine.sh'
-    : targetOs.value === 'openwrt' ? 'install-openwrt.sh'
-    : targetOs.value === 'mac' ? 'install-mac.sh'
-    : targetOs.value === 'synology' ? 'install-synology.sh'
-    : 'install.sh'
-  let cmd = `curl -sL ${HOST}/${script} | ${sudoPrefix}${shell} -s install -id=${copyServerId.value} -secret='${apiSecret.value}' -url=${HOST}/update -collect_interval=${collectInterval.value} -interval=${reportInterval.value} -reset_day=${resetDay.value ?? 1} -auto_update=${autoUpdateFlag}`
-  if (customCt.value) cmd += ` -ct=${customCt.value}`
-  if (customCu.value) cmd += ` -cu=${customCu.value}`
-  if (customCm.value) cmd += ` -cm=${customCm.value}`
-  if (customBd.value) cmd += ` -bd=${customBd.value}`
-  if (networkInterface.value) cmd += ` -interface=${networkInterface.value}`
-  if (hasCorrectionValue(rxCorrection.value)) cmd += ` -rx_correction=${rxCorrection.value}`
-  if (hasCorrectionValue(txCorrection.value)) cmd += ` -tx_correction=${txCorrection.value}`
-  return cmd
+  const params = ['install']
+  if (proxy) params.push(`--install-ghproxy=${proxy}`)
+  params.push(
+    `-id=${copyServerId.value}`,
+    `-secret='${apiSecret.value}'`,
+    `-url=${HOST}/update`,
+    `-collect_interval=${collectInterval.value}`,
+    `-interval=${reportInterval.value}`,
+    `-connection_mode=${effectiveConnectionMode}`,
+    `-reset_day=${resetDay.value ?? 1}`,
+    `-auto_update=${autoUpdateFlag}`
+  )
+  if (customCt.value) params.push(`-ct=${customCt.value}`)
+  if (customCu.value) params.push(`-cu=${customCu.value}`)
+  if (customCm.value) params.push(`-cm=${customCm.value}`)
+  if (customBd.value) params.push(`-bd=${customBd.value}`)
+  if (networkInterface.value) params.push(`-interface=${networkInterface.value}`)
+  if (hasCorrectionValue(rxCorrection.value)) params.push(`-rx_correction=${rxCorrection.value}`)
+  if (hasCorrectionValue(txCorrection.value)) params.push(`-tx_correction=${txCorrection.value}`)
+  const ghUrl = buildGhRawUrl(proxy, '/huilang-me/cfsm-agent/main/install.sh')
+  return `curl -fsSL ${ghUrl} | sh -s -- ${params.join(' ')}`
 }
 
 const copyCustomCmd = async () => {
@@ -1401,6 +1607,7 @@ const openEditModal = (server) => {
     reset_day: server.reset_day ?? 1,
     collect_interval: server.collect_interval ?? 0,
     report_interval: server.report_interval || 60,
+    connection_mode: getEffectiveConnectionMode(server.connection_mode),
     custom_ct: server.custom_ct || '',
     custom_cu: server.custom_cu || '',
     custom_cm: server.custom_cm || '',
@@ -1486,6 +1693,7 @@ const saveEdit = async () => {
     reset_day: editForm.value.reset_day,
     collect_interval: editForm.value.collect_interval,
     report_interval: editForm.value.report_interval,
+    connection_mode: getEffectiveConnectionMode(editForm.value.connection_mode),
     custom_ct: pingNodeValidation.values.custom_ct,
     custom_cu: pingNodeValidation.values.custom_cu,
     custom_cm: pingNodeValidation.values.custom_cm,
@@ -1517,6 +1725,8 @@ const openDeleteModal = (id) => {
   const server = servers.value.find(s => s.id === id)
   currentServerName.value = server?.name || ''
   deleteTargetOs.value = 'linux'
+  deleteVersion.value = 'go'
+  deleteGhProxy.value = ''
   uninstallCopied.value = false
   showDeleteModal.value = true
 }
@@ -1585,18 +1795,29 @@ const toggleServer = (id) => {
 
 let draggedRow = null
 
-const handleDragStart = (e) => {
-  const row = e.target.closest('.server-row')
-  draggedRow = row ? row.dataset.serverId : null
-  e.dataTransfer.effectAllowed = 'move'
+const handleDragStart = (e, serverId = null) => {
+  const row = e?.target?.closest?.('.server-row')
+  draggedRow = String(serverId || row?.dataset?.serverId || '')
+  if (e?.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+  }
 }
 
 const handleDrop = async (e, targetId) => {
-  if (!draggedRow || draggedRow === targetId) return
+  e?.preventDefault?.()
+  targetId = String(targetId || '')
+  if (!draggedRow || draggedRow === targetId) {
+    draggedRow = null
+    return
+  }
 
-  const rows = Array.from(document.querySelectorAll('.server-row'))
+  const rows = Array.from(document.querySelectorAll('#tab-servers .table-wrapper .terminal-table tbody > .server-row[data-server-id]'))
   const draggedIndex = rows.findIndex(r => r.dataset.serverId === draggedRow)
   const targetIndex = rows.findIndex(r => r.dataset.serverId === targetId)
+  if (draggedIndex < 0 || targetIndex < 0) {
+    draggedRow = null
+    return
+  }
 
   const orders = rows.map(r => r.dataset.serverId)
   const [dragged] = orders.splice(draggedIndex, 1)

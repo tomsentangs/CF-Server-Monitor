@@ -41,7 +41,7 @@
   - [3.2](#32-action-login---登录) [`action: login`](#32-action-login---登录) [- 登录](#32-action-login---登录)
   - [3.3](#33-action-get_settings---读取全部设置) [`action: get_settings`](#33-action-get_settings---读取全部设置) [- 读取全部设置](#33-action-get_settings---读取全部设置)
   - [3.4](#34-action-list---列出全部服务器含在线统计) [`action: list`](#34-action-list---列出全部服务器含在线统计) [- 列出全部服务器（含在线/统计）](#34-action-list---列出全部服务器含在线统计)
-  - [3.5](#35-action-d1_usage---d1--workers-用量) [`action: d1_usage`](#35-action-d1_usage---d1--workers-用量) [- D1 / Workers 用量](#35-action-d1_usage---d1--workers-用量)
+  - [3.5](#35-action-d1_usage---d1--workers--durable-objects-用量) [`action: d1_usage`](#35-action-d1_usage---d1--workers--durable-objects-用量) [- D1 / Workers / Durable Objects 用量](#35-action-d1_usage---d1--workers--durable-objects-用量)
   - [3.6](#36-action-save_settings---保存设置) [`action: save_settings`](#36-action-save_settings---保存设置) [- 保存设置](#36-action-save_settings---保存设置)
   - [3.6.1](#361-action-start_theme_preview---生成主题预览授权) [`action: start_theme_preview`](#361-action-start_theme_preview---生成主题预览授权) [- 生成主题预览授权](#361-action-start_theme_preview---生成主题预览授权)
   - [3.6.2](#362-action-clear_theme_preview_auth---清除主题预览授权) [`action: clear_theme_preview_auth`](#362-action-clear_theme_preview_auth---清除主题预览授权) [- 清除主题预览授权](#362-action-clear_theme_preview_auth---清除主题预览授权)
@@ -91,7 +91,7 @@
   1. 若 `site_options.password` 已设置为 PBKDF2 格式 → 按 `pbkdf2_sha256$iterations$salt$hash` 校验
   2. 若 `site_options.password` 为旧版 32 位 MD5 → 按 MD5 兼容校验，成功后自动升级为 PBKDF2
   3. 若 `site_options.password` 未设置或为空 → 与 `API_SECRET` 直接比对
-  4. 用户名：若 `site_options.username` 已设置则用之，否则使用 `API_USER_NAME` 环境变量，最终回退为 `admin`
+  4. 用户名：若 `site_options.username` 已设置则用之，否则回退为 `admin`
 - **失败返回**：`401 { "error": "Invalid username or password", "code": 401 }`
 
 #### C. JWT Bearer（管理操作 → 后续管理请求）
@@ -217,15 +217,37 @@ CORS_ALLOWED_ORIGINS=https://status.example.com,https://admin.example.com
 **Request**
 
 - Method：`POST`
+- WebSocket：`GET /update` + `Upgrade: websocket`，公网 URL 形如 `wss://status.example.com/update`
 - Path：`/update`
 - Headers：
   ```
   Content-Type: application/json
   X-Agent-Version: <探针版本号>
-  X-Agent-Config-Schema: 3
+  X-Agent-Config-Schema: 4
   X-Agent-Config-Md5: <最后成功应用的配置 MD5，首次为 none>
   ```
-  动态配置请求头为新版探针使用的可选字段；未携带时保持旧版响应协议。
+  动态配置请求头为新版探针使用的可选字段；当前新 Go Agent 使用 schema `4`。schema `3` 仍按旧兼容配置返回，未携带时保持旧版响应协议。
+
+  WebSocket 握手只能使用 `GET + Upgrade`，这是 WebSocket 协议限制；后端仍通过同一个 `/update` 路径区分 `POST` 与 `wss`。握手成功后服务端先发送：
+
+  ```json
+  { "type": "hello", "ts": 1737638340000, "protocol": "update" }
+  ```
+
+  WebSocket 上报消息兼容下方 POST JSON body，也支持包一层 `type: "update"`：
+
+  ```json
+  {
+    "type": "update",
+    "id": "9b2c4d3e-1a2b-4c5d-9e8f-7a6b5c4d3e2f",
+    "secret": "<API_SECRET>",
+    "payload": {
+      "metrics": { "...": "metrics" }
+    }
+  }
+  ```
+
+  第一条有效上报必须携带 `id` 与 `secret`。连接认证成功后，后续消息可以省略 `id` 与 `secret`；如果后续消息显式携带不同 `id` 或错误 `secret`，服务端会发送错误帧并关闭连接。
 - Body（JSON）：
   ```json
   {
@@ -239,6 +261,14 @@ CORS_ALLOWED_ORIGINS=https://status.example.com,https://admin.example.com
       "swap_used": "100",
       "disk_total": "102400",
       "disk_used": "32000",
+      "disk": {
+        "read_bps": 4096,
+        "write_bps": 2048,
+        "read_iops": 12,
+        "write_iops": 8,
+        "await_ms": 1.5,
+        "util": 3.2
+      },
       "load_avg": "0.10 0.20 0.30",
       "boot_time": "1700000000000",
       "net_rx": "12345678",
@@ -301,6 +331,7 @@ CORS_ALLOWED_ORIGINS=https://status.example.com,https://admin.example.com
 | `swap_used`      | string\|number | MB  | 是  | Swap 已用                                     |
 | `disk_total`     | string\|number | MB  | 是  | 磁盘总容量                                       |
 | `disk_used`      | string\|number | MB  | 是  | 磁盘已用                                        |
+| `disk`           | object       | -   | 否  | 磁盘 IO 指标。缺失、不是 object，或 6 个子字段全为 0 时，API / WebSocket 不返回 `disk` 字段；存在至少一个非 0 子字段时，缺失或无法解析的子字段按 0 处理。子字段：`read_bps`、`write_bps`、`read_iops`、`write_iops`、`await_ms`、`util` |
 | `load_avg`       | string       | -   | 是  | 三个浮点，空格分隔                                   |
 | `boot_time`      | string\|number | 毫秒  | 是  | 系统启动时间（Unix ms）                             |
 | `net_rx`         | string\|number | 字节  | 是  | 累计接收字节                                      |
@@ -332,7 +363,7 @@ CORS_ALLOWED_ORIGINS=https://status.example.com,https://admin.example.com
 
 **Response**
 
-- 旧版探针（未携带 `X-Agent-Config-Schema: 3`）：返回 `200 OK`：
+- 旧版探针（未携带受支持的 `X-Agent-Config-Schema`）：返回 `200 OK`：
   ```
   OK
   ```
@@ -341,10 +372,10 @@ CORS_ALLOWED_ORIGINS=https://status.example.com,https://admin.example.com
 - 新版探针且配置 MD5 不一致，或仍有待确认流量修正：返回 `200 OK`，响应头携带当前
   `X-Agent-Config-Schema` 与 `X-Agent-Config-Md5`，响应体以固定顺序的完整 QueryParam 配置开头：
   ```text
-  collect_interval=0&report_interval=60&reset_day=1&schema_version=3&custom_ct=gd-ct-dualstack.ip.zstaticcdn.com&custom_cu=gd-cu-dualstack.ip.zstaticcdn.com&custom_cm=gd-cm-dualstack.ip.zstaticcdn.com&custom_bd=ip.zstaticcdn.com&interface=
+  collect_interval=0&report_interval=60&reset_day=1&schema_version=4&custom_ct=gd-ct-dualstack.ip.zstaticcdn.com&custom_cu=gd-cu-dualstack.ip.zstaticcdn.com&custom_cm=gd-cm-dualstack.ip.zstaticcdn.com&custom_bd=ip.zstaticcdn.com&interface=&connection_mode=auto
   ```
   （`Content-Type: application/x-www-form-urlencoded; charset=utf-8`）
-- ~~动态配置包含 `traffic_calc_type`、`traffic_limit`、`auto_update` 等全部探针运行参数。~~ **2026-07-26 修订，2026-07-31 更新**：MD5 覆盖的规范配置仅包含 `collect_interval`、`report_interval`、`reset_day`、`schema_version`、`custom_ct`、`custom_cu`、`custom_cm`、`custom_bd`、`interface`。待应用的 `rx_correction`、`tx_correction` 会追加到响应体，但不参与配置 MD5；启用自动更新且版本不一致时追加 `update=1`。
+- ~~动态配置包含 `traffic_calc_type`、`traffic_limit`、`auto_update` 等全部探针运行参数。~~ **2026-07-26 修订，2026-07-31 更新，2026-08-15 更新**：schema `4` 的 MD5 覆盖规范配置包含 `collect_interval`、`report_interval`、`reset_day`、`schema_version`、`custom_ct`、`custom_cu`、`custom_cm`、`custom_bd`、`interface`、`connection_mode`；schema `3` 兼容响应不包含 `connection_mode`。待应用的 `rx_correction`、`tx_correction` 会追加到响应体，但不参与配置 MD5；启用自动更新且版本不一致时追加 `update=1`。
 - 探针应用流量修正后，可在下一次 `POST /update` 顶层回传 `rx_correction` / `tx_correction`。值匹配时后端清空待修正字段并直接返回纯文本 `OK`，本次请求不要求 `metrics`。
 - 失败：
   ```json
@@ -352,9 +383,81 @@ CORS_ALLOWED_ORIGINS=https://status.example.com,https://admin.example.com
   { "error": "Server not found", "code": 404 }
   ```
 
+**WebSocket 上报响应 / 错误**
+
+- 握手失败：
+  - `503 { "error": "WebSocket not enabled", "code": 503 }`：未绑定 `METRICS_BROADCASTER` Durable Object
+  - `426 Expected WebSocket upgrade request`：`GET /update` 未携带 `Upgrade: websocket`
+  - `403 Forbidden`：设置了 WebSocket `Origin`，且不在 `CORS_ALLOWED_ORIGINS` 中
+  - `500 { "error": "WebSocket error", "code": 500 }`：Worker 转发至 DO 失败
+- 上报成功：服务端发送 ack，不关闭连接。
+  ```json
+  { "type": "ack", "ts": 1737638343000, "persisted": true, "nextD1WriteAfterMs": 60000, "nextWssReportAfterMs": 60000 }
+  ```
+  `persisted` 表示本条消息是否触发 D1 历史写入；`nextD1WriteAfterMs` 是距离下一次允许写入 D1 的最短等待时间。WSS 首条成功指标会立即写入一次 D1，后续按该服务器 `report_interval` 控制写入频率（允许值沿用配置：`30/60/120/180` 秒；异常回退 `60` 秒）。`nextWssReportAfterMs` 是服务端建议的下一次 WSS 上报间隔：有前端实时订阅时约为 `report_interval / 15`；仅资源告警缓存活跃且无前端订阅时至少 `60` 秒；无实时消费者时回退到 `report_interval`，用于降低 idle 状态 DO WebSocket 消息数。
+  新版 WSS Agent 可在握手 URL query 中携带 `config_schema=4` / `config_md5=<md5>`，也兼容握手 Header `X-Agent-Config-Schema: 4` 与 `X-Agent-Config-Md5` 记录当前配置状态；当某次上报消息携带 `config_schema: 4` / `config_md5` 时，ack 会同时返回动态配置协商字段。兼容 schema `3` 的 Agent 仍会收到不含 `connection_mode` 的 schema `3` 配置：
+  ```json
+  {
+    "type": "ack",
+    "ts": 1737638343000,
+    "persisted": false,
+    "nextD1WriteAfterMs": 30000,
+    "nextWssReportAfterMs": 3000,
+    "config_schema": 4,
+    "config_md5": "b4d7c0d...",
+    "has_config": true,
+    "body": "collect_interval=0&report_interval=60&reset_day=1&schema_version=4&custom_ct=gd-ct-dualstack.ip.zstaticcdn.com&custom_cu=gd-cu-dualstack.ip.zstaticcdn.com&custom_cm=gd-cm-dualstack.ip.zstaticcdn.com&custom_bd=&interface=&connection_mode=auto",
+    "config_body": "collect_interval=0&report_interval=60&reset_day=1&schema_version=4&custom_ct=gd-ct-dualstack.ip.zstaticcdn.com&custom_cu=gd-cu-dualstack.ip.zstaticcdn.com&custom_cm=gd-cm-dualstack.ip.zstaticcdn.com&custom_bd=&interface=&connection_mode=auto",
+    "payload": {
+      "collect_interval": 0,
+      "report_interval": 60,
+      "reset_day": 1,
+      "schema_version": 4,
+      "custom_ct": "gd-ct-dualstack.ip.zstaticcdn.com",
+      "custom_cu": "gd-cu-dualstack.ip.zstaticcdn.com",
+      "custom_cm": "gd-cm-dualstack.ip.zstaticcdn.com",
+      "custom_bd": "",
+      "interface": "",
+      "connection_mode": "auto",
+      "config_md5": "b4d7c0d..."
+    }
+  }
+  ```
+  `has_config:false` 表示当前 MD5 一致且没有待确认流量修正；`has_config:true` 时 Agent 应优先按 `body` / `config_body` 复用 POST 动态配置解析逻辑，或读取结构化 `payload`。官方 WSS Agent 默认仅在首次上报、约每 60 秒或本地配置 MD5 变化时携带 `config_schema` / `config_md5`；本次消息未携带这些字段时，ack 可以只包含 `persisted` / `nextD1WriteAfterMs` / `nextWssReportAfterMs` 等基础字段，不携带配置协商字段。若存在待确认流量修正，`body` / `config_body` 与 `payload` 会追加 `rx_correction` / `tx_correction`，Agent 应应用后通过 WSS 或 POST 回传确认。
+- 流量修正确认成功：
+  ```json
+  { "type": "ack", "ts": 1737638343000, "correction": true }
+  ```
+- 上报失败：服务端先发送错误帧，然后使用 close code `1008` 关闭 WebSocket；close reason 与 `error` 一致。
+  ```json
+  { "type": "error", "ts": 1737638343000, "error": "Invalid secret", "code": 401 }
+  ```
+  常见错误：
+
+  | code | error | 是否查询 D1 | 说明 |
+  | ---- | ----- | ---------- | ---- |
+  | 400 | `Invalid JSON` | 否 | WebSocket 消息不是合法 JSON |
+  | 400 | `Invalid report payload` | 否 | 消息不是对象，或 `type:"update"` 的 `payload` 非对象 |
+  | 400 | `Invalid server ID` | 否 | `id` 为空、过长或包含非法字符 |
+  | 401 | `Invalid secret` | 否 | 第一条有效上报未携带正确 `secret`；认证后显式发送错误 `secret` 也会关闭连接 |
+  | 403 | `Server ID changed` | 否 | 已认证连接切换为另一个 `id` |
+  | 404 | `Server not found` | 是 | `id` 格式合法，但 `servers` 表不存在该服务器 |
+  | 400 | `Missing history_partition_id` | 是 | 服务器历史分区未初始化，且自动优化后仍不可用 |
+  | 400 | `Missing metrics` | 视认证状态而定 | 认证成功后没有有效 `metrics` / `samples` / `batch` |
+  | 400 | `Invalid correction` | 否 | `rx_correction` / `tx_correction` 格式非法 |
+
+> Agent 收到任意 `type:"error"` 或 close code `1008` 后，应停止当前 WSS 连接和 POST fallback 上报，至少等待 `120` 秒后再重新连接或重试 POST，避免认证/配置错误时持续消耗额度。
+
+**WebSocket 计费注意**
+
+- 建立 `wss://.../update` 连接需要一次 `GET + Upgrade`，该握手按一次 Workers request 计入。
+- 连接建立后的 Agent 上报消息由 Durable Object 标准 WebSocket API 接收，不使用 Hibernation API 接管 `/update` 连接；它们作为 Durable Objects WebSocket incoming messages 计量，Cloudflare 计费口径按 `20:1` 折算为 DO requests。
+- 该模式避免高频 Agent 指标消息表现为 hibernation wakeup，但只要 Agent 长连接存在，DO 会保持非休眠状态并产生 duration（GB-s）。前端订阅 `/api/ws` 仍使用 WebSocket Hibernation API。
+- 因此，Agent 应保持长连接；不要每次采样都断开重连。错误 `id` / `secret` 当前在 DO 消息阶段返回错误帧并关闭，避免每次上报都走 Worker 401。
+
 **副作用**
 
-1. `metrics_history` 只写入本次请求中最新的一个样本，避免 1 秒采集时放大 D1 写入次数。
+1. `POST /update` 的 `metrics_history` 只写入本次请求中最新的一个样本；`wss://.../update` 首条成功指标立即写入一次，后续按服务器 `report_interval` 最多写入一次 D1。
 2. 触发 Durable Object `MetricsBroadcaster` 内部广播，统一发送 `{type:"batchUpdate", ts, updates:[...]}` 格式，前端按样本时间逐个回放。
 3. 写入 `request.cf.country`（或 `cf-ipcountry` Header）作为该条记录的 `region` 字段。~~服务端会统一转大写。~~ **2026-07-26 修订**：当前按原值入库；Cloudflare 的国家代码通常为大写，但自定义回退 Header 不会被规范化。
 
@@ -477,10 +580,12 @@ CORS_ALLOWED_ORIGINS=https://status.example.com,https://admin.example.com
 | 字段            | 说明                                                                    |
 | ------------- | --------------------------------------------------------------------- |
 | `servers`     | 已合并最新指标的服务器列表（按 `sort_order ASC`），未登录用户**自动过滤** **`is_hidden = '1'`** |
-| `latestReportUpdates` | 每台服务器最近一次批量上报的采样回放数据，用于新页面连续回放；来自 Worker/DO 内存缓存，缓存约 5 分钟，进程重启或 DO 回收后允许为空。REST 响应中的样本统一为 `{ ts, data }`，`data` 按探针批量采样包透传；内置探针默认只在普通采样点上报 `cpu`、`ram_total`、`ram_used`、`swap_total`、`swap_used`、`net_in_speed`、`net_out_speed` |
+| `latestReportUpdates` | 每台服务器最近一次批量上报的采样回放数据，用于新页面连续回放；来自 Worker/DO 内存缓存，缓存约 4 分钟，进程重启或 DO 回收后允许为空。REST 响应中的样本统一为 `{ ts, data }`，`data` 按探针批量采样包透传；内置探针默认只在普通采样点上报 `cpu`、`ram_total`、`ram_used`、`swap_total`、`swap_used`、`net_in_speed`、`net_out_speed` |
 | `stats`       | 聚合统计：在线阈值 300 秒（5 分钟无上报视为离线）                                          |
 | `regionStats` | 按 ISO 区域码（大写）统计的服务器数                                                  |
 | `sysConfig`   | 当前站点开关：`show_price`、`show_expire`、`show_tf`、`show_time`、`display_mode`。主题配置请从 `/api/config` 的 `theme_options` 读取。~~旧版示例中的 `site_title` 不在该对象内。~~（2026-07-26 修订） |
+
+> `/api/servers` 的 `latestReportUpdates` 与 `servers[].ping` / `servers[].loss` 读取自 DO 实时状态，并在当前 Worker isolate 内短缓存约 4 分钟。该缓存不跨 isolate 共享，冷启动或缓存过期时会回源 DO。
 
 ***
 
@@ -539,6 +644,14 @@ CORS_ALLOWED_ORIGINS=https://status.example.com,https://admin.example.com
   "swap_used": 100,
   "disk_total": 102400,
   "disk_used": 32000,
+  "disk": {
+    "read_bps": 4096,
+    "write_bps": 2048,
+    "read_iops": 12,
+    "write_iops": 8,
+    "await_ms": 1.5,
+    "util": 3.2
+  },
   "cpu_cores": 4,
   "cpu_info": "Intel(R) Xeon(R) CPU",
   "gpu_info": "[{\"id\":\"0\",\"name\":\"NVIDIA GeForce RTX 3060\",\"info\":12.5}]",
@@ -577,7 +690,7 @@ CORS_ALLOWED_ORIGINS=https://status.example.com,https://admin.example.com
 ```
 
 > `last_updated` 来自最新指标；`timestamp` 是服务器配置记录的创建/导入时间字段，普通编辑不会刷新它。~~两者都表示最近上报时间。~~（2026-07-26 修订）
-> `latestReportUpdates` 与 `/api/servers` 同名字段形状一致，仅包含当前服务器最近一次批量上报的采样回放包；用于详情页打开时连续回放。REST 样本统一为 `{ ts, data }`，`data` 按探针采样包透传。缓存约 5 分钟，Worker/DO 重启后允许为空数组。
+> `/api/server` 详情接口不返回新增的 `ping` / `loss` 窗口数组；详情页仍可使用 `ping_ct` / `ping_cu` / `ping_cm` / `ping_bd` 与 `loss_ct` / `loss_cu` / `loss_cm` / `loss_bd` 当前单点值。`latestReportUpdates` 与 `/api/servers` 同名字段形状一致，仅包含当前服务器最近一次批量上报的采样回放包；用于详情页打开时连续回放。REST 样本统一为 `{ ts, data }`，`data` 按探针采样包透传。缓存约 4 分钟，Worker/DO 重启后允许为空数组。
 
 **失败返回**：
 
@@ -611,6 +724,20 @@ CORS_ALLOWED_ORIGINS=https://status.example.com,https://admin.example.com
     "ram_used": 3700,
     "disk_total": 102400,
     "disk_used": 32000,
+    "disk_read_bps": 4096,
+    "disk_write_bps": 2048,
+    "disk_read_iops": 12,
+    "disk_write_iops": 8,
+    "disk_await_ms": 1.5,
+    "disk_util": 3.2,
+    "disk": {
+      "read_bps": 4096,
+      "write_bps": 2048,
+      "read_iops": 12,
+      "write_iops": 8,
+      "await_ms": 1.5,
+      "util": 3.2
+    },
     "region": "HK"
   }
 ]
@@ -817,26 +944,17 @@ https://raw.githubusercontent.com/huilang-me/CFSM-Theme-Store/refs/heads/main/th
     {
       "name": "Example Theme",
       "url": "https://github.com/Tokinx/cf-server-monitor-theme-emerald",
-      "branch": "build",
-      "versions": [
-        {
-          "short_version": "8cea2bb",
-          "title": "update theme to 2024-01-01",
-          "releaseDate": "2024-01-01",
-          "changelog": "update theme",
-          "commitId": "8cea2bbdbadb50684f2e97e13f7b2149ef99911b",
-          "theme_url": "https://github.com/Tokinx/cf-server-monitor-theme-emerald/tree/8cea2bbdbadb50684f2e97e13f7b2149ef99911b"
-        }
-      ]
+      "branch": "build"
     }
   ]
 }
 ```
 
 - 上游对象的其他字段原样保留。
-- 主题对象配置 GitHub 仓库 `url` 和 `branch` 时，会通过 GitHub commits API 读取该分支最近 10 个 commit，并生成可直接写入 `theme_url` 的版本列表；`/theme` 响应里的 `versions` 只由 commits API 生成。commits API 失败时不会刷新内存缓存；已有成功缓存时返回旧缓存，无缓存时该主题 `versions` 返回空数组。管理端主题商店会对空 `versions` 主题执行浏览器端 GitHub commits API fallback 补齐版本下拉。
+- 后端只读取上游 `themes.json`，不调用 GitHub commits API 生成 `versions`。
+- 管理端主题商店默认不请求版本列表；点击主题卡片的“加载版本”后，才会在浏览器端通过 `api.github.com` 读取该主题仓库最近 10 个 commit，并生成可直接写入 `theme_url` 的版本下拉。
 - `schema` 缺失时补为 `1`；`themes` 不是数组时补为空数组；上游 `themes.json` 不需要提供 `versions`。
-- 上游失败时返回已有内存缓存，即使它已经超过 300 秒 TTL；从未成功缓存时返回 `{ "schema": 1, "themes": [] }`，HTTP 状态仍为 `200`。
+- 上游读取失败且没有命中 300 秒内存缓存时返回 `502`，管理端会改由浏览器端访问 `raw.githubusercontent.com` 作为 fallback。
 
 ***
 
@@ -849,8 +967,8 @@ https://raw.githubusercontent.com/huilang-me/CFSM-Theme-Store/refs/heads/main/th
 | `/`、`/#/`、`/#/server/:id` 等前台路径 | `theme_url` 为空时返回内置主题；配置第三方主题时返回反代后的主题 `index.html` |
 | `/admin` | 始终返回内置默认主题的管理后台入口 |
 | `/admin/` | `302` 跳转到 `/admin#admin` |
-| `/assets/*` | 配置或预览第三方主题时反代对应主题 `assets/`；从 `/admin` 引用时优先返回内置静态资源 |
-| 其他静态路径 | 不走主题反代，仍由项目原有 ASSETS 或 public 文件处理 |
+| `/assets/*` | 配置或预览第三方主题时反代对应主题 `assets/`；未配置主题时返回 404 |
+| 其他静态路径 | 不走主题反代，由 Workers Static Assets 直接处理，缓存头以 `public/_headers` 为准 |
 
 **主题 URL 规则**：
 
@@ -1002,7 +1120,7 @@ Header：`X-Turnstile-Token: <token>`（当 `site_options.turnstile_enabled` 或
 
 ***
 
-### 3.5 `action: d1_usage` - D1 / Workers 用量
+### 3.5 `action: d1_usage` - D1 / Workers / Durable Objects 用量
 
 **Request**
 
@@ -1025,19 +1143,37 @@ Header：`X-Turnstile-Token: <token>`（当 `site_options.turnstile_enabled` 或
     "today": {
       "rowsRead": 12345,
       "rowsWritten": 678,
-      "workersRequests": 1234
+      "workersRequests": 1234,
+      "durableObjectsRequests": 1420,
+      "durableObjectsHttpRequests": 1000,
+      "durableObjectsHibernationWakeups": 400,
+      "durableObjectsInboundWebSocketMessages": 400,
+      "durableObjectsOutboundWebSocketMessages": 6900,
+      "durableObjectsRawRequests": 1400,
+      "durableObjectsRequestsEstimated": true,
+      "durableObjectsRequestBillingRatio": 20,
+      "durableObjectsDuration": 12.34
     },
     "yesterday": {
       "rowsRead": 23456,
       "rowsWritten": 789,
-      "workersRequests": 2345
+      "workersRequests": 2345,
+      "durableObjectsRequests": 2630,
+      "durableObjectsHttpRequests": 2000,
+      "durableObjectsHibernationWakeups": 600,
+      "durableObjectsInboundWebSocketMessages": 600,
+      "durableObjectsOutboundWebSocketMessages": 9120,
+      "durableObjectsRawRequests": 2600,
+      "durableObjectsRequestsEstimated": true,
+      "durableObjectsRequestBillingRatio": 20,
+      "durableObjectsDuration": 23.45
     }
   },
   "message": "d1UsageQueried"
 }
 ```
 
-> ~~响应会返回日期、套餐限额、剩余额度、数据库数量和 Account ID。~~ **2026-07-26 修订**：当前只返回两个时间范围的 `rowsRead`、`rowsWritten`、`workersRequests`；额度由前端自行展示，不属于 API 响应。
+> ~~响应会返回日期、套餐限额、剩余额度、数据库数量和 Account ID。~~ **2026-07-26 修订**：当前返回两个时间范围的 `rowsRead`、`rowsWritten`、`workersRequests`、`durableObjectsRequests`、`durableObjectsDuration`；额度由前端自行展示，不属于 API 响应。`durableObjectsDuration` 单位为 GB-s。**2026-08-15 修订**：`durableObjectsRequests` 为计费请求数估算值：`durableObjectsHttpRequests` 与 `durableObjectsHibernationWakeups` 按 `1:1` 计入，`durableObjectsInboundWebSocketMessages` 按 `20:1` 折算计入，`durableObjectsOutboundWebSocketMessages` 仅返回数量但不计入请求计费。`durableObjectsRawRequests` 为 `durableObjectsInvocationsAdaptiveGroups` 返回的原始 Durable Objects invocation request 总数，包含 HTTP/升级请求与 Hibernation 唤醒。
 >
 > **统计窗口**：`today` 为 UTC 当日 `00:00:00` 至 `23:59:59`；`yesterday` 为 UTC 昨日 `00:00:00` 至 `23:59:59`。
 
@@ -1051,6 +1187,8 @@ Header：`X-Turnstile-Token: <token>`（当 `site_options.turnstile_enabled` 或
 >
 > - `d1AnalyticsAdaptiveGroups`（`rowsRead` / `rowsWritten`）
 > - `workersInvocationsAdaptive`（`requests`）
+> - `durableObjectsInvocationsAdaptiveGroups`（`requests`，作为 `durableObjectsRawRequests`）
+> - `durableObjectsPeriodicGroups`（`duration`，单位 GB-s）
 
 ***
 
@@ -1480,8 +1618,10 @@ UUID 缺失或格式非法时返回 `400 { "error": "invalidServerId", "code": 4
 **Response 200**
 
 ```json
-{ "ok": true, "subscribers": 3 }
+{ "ok": true, "subscribers": 3, "sockets": 4 }
 ```
+
+`subscribers` 为前端实时订阅 WebSocket 数；`sockets` 为 DO 当前托管的全部 WebSocket 数，包含 Agent 上报 WSS 连接。
 
 或
 
@@ -1535,9 +1675,11 @@ UUID 缺失或格式非法时返回 `400 { "error": "invalidServerId", "code": 4
 | `udp_conn`                                    | number             | UDP 套接字数                  |
 | `ping_ct` / `ping_cu` / `ping_cm` / `ping_bd` | number\|null\|false | 各运营商延时 (ms)；`false` 表示禁用该节点 |
 | `loss_ct` / `loss_cu` / `loss_cm` / `loss_bd` | number\|null\|false | 各运营商丢包率 (%)；`false` 表示禁用该节点 |
+| `ping` / `loss`                               | array              | 仅 `/api/servers` 的 `servers[]` 列表项返回，`/api/server` 详情接口不返回；DO 缓存的一小时探测窗口，固定 30 个点，每 2 分钟一个槽位；实际采样不足 30 个槽位时，用时间最近的已有点补齐。若窗口最后一点落后当前最新指标超过 2 分钟，后端会用本次响应已查询到的最新指标追加一组点，不增加额外查询。点格式为 `{ ts, ct, cu, cm, bd }`，`ct/cu/cm/bd` 分别对应电信、联通、移动、BGP |
 | `ram_total` / `ram_used`                      | number             | MB                        |
 | `swap_total` / `swap_used`                    | number             | MB                        |
 | `disk_total` / `disk_used`                    | number             | MB                        |
+| `disk`                                        | object             | 磁盘 IO 当前值：`read_bps` / `write_bps` 为 B/s，`read_iops` / `write_iops` 为 ops/s，`await_ms` 为 ms，`util` 为 %；旧探针、旧历史缺失，或 6 个子字段全为 0 时不返回该对象 |
 | `cpu_cores`                                   | number             | 逻辑核心数                     |
 | `cpu_info`                                    | string             | CPU 型号                    |
 | `gpu_info`                                    | array\|string\|null | GPU 列表。实时上报 / WebSocket 可能是 `[{id,name,info}]` 数组；REST 详情和历史接口通常是同结构的 JSON 字符串，其中 `info` 为占用率 |
@@ -1562,7 +1704,7 @@ UUID 缺失或格式非法时返回 `400 { "error": "invalidServerId", "code": 4
 | 字段          | 类型             | 说明 |
 | ----------- | -------------- | ---- |
 | `timestamp` | number (ms)    | 采样时间 |
-| 其余字段        | number\|string\|null | 当前 `/api/history/all` 固定返回：`cpu, gpu_info, ram_total, ram_used, disk_total, disk_used, processes, net_in_speed, net_out_speed, tcp_conn, udp_conn, ping_ct, ping_cu, ping_cm, ping_bd, loss_ct, loss_cu, loss_cm, loss_bd, swap_total, swap_used, load_avg, region, kernel_version`；其中 `gpu_info` 通常是 JSON 数组字符串 |
+| 其余字段        | number\|string\|null | 当前 `/api/history/all` 固定返回：`cpu, gpu_info, ram_total, ram_used, disk_total, disk_used, disk_read_bps, disk_write_bps, disk_read_iops, disk_write_iops, disk_await_ms, disk_util, processes, net_in_speed, net_out_speed, tcp_conn, udp_conn, ping_ct, ping_cu, ping_cm, ping_bd, loss_ct, loss_cu, loss_cm, loss_bd, swap_total, swap_used, load_avg, region, kernel_version`；其中 `gpu_info` 通常是 JSON 数组字符串，`disk` 仅在 `disk_*` 历史列存在有效数据时由服务端还原 |
 
 历史行不包含单独的 `gpu` 字段，只包含 `gpu_info`。
 
@@ -1620,6 +1762,9 @@ UUID 缺失或格式非法时返回 `400 { "error": "invalidServerId", "code": 4
 | `ping`   | C → S | 精确文本 `{"type":"ping"}`                       |
 | `pong`   | S → C | 自动响应的精确文本 `{"type":"pong"}`，不带 `ts`   |
 | `batchUpdate` | S → C | `{ ts: number, updates: Array<{ serverId: string, samples: Array<{ ts: number, data: Partial<Server> }> }> }` |
+| `update` | C → S | `/update` WSS 上报可选包装格式：`{ type:"update", id:string, secret:string, payload:{ metrics?:object, samples?:array, batch?:array } }` |
+| `ack` | S → C | `/update` WSS 上报确认：`{ ts:number, persisted?:boolean, nextD1WriteAfterMs?:number, nextWssReportAfterMs?:number, correction?:true, config_schema?:number, config_md5?:string, has_config?:boolean, body?:string, config_body?:string, payload?:object }` |
+| `error` | S → C | `/update` WSS 上报错误：`{ ts:number, error:string, code:number }`；随后服务端通常以 close code `1008` 关闭连接 |
 
 客户端发来的 `pong` 会被静默忽略；它不是服务端定时发送的双向心跳协议。
 
@@ -1675,6 +1820,7 @@ curl -X POST https://status.example.com/update \
       "cpu":"12.34","ram_total":"8192","ram_used":"3700",
       "swap_total":"2048","swap_used":"100",
       "disk_total":"102400","disk_used":"32000",
+      "disk":{"read_bps":4096,"write_bps":2048,"read_iops":12,"write_iops":8,"await_ms":1.5,"util":3.2},
       "load_avg":"0.10 0.20 0.30","boot_time":"1700000000000",
       "net_rx":"12345678","net_tx":"87654321",
       "net_rx_monthly":"1073741824","net_tx_monthly":"536870912",
